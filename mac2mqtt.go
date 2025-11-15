@@ -70,14 +70,16 @@ func isMediaControlAvailable() bool {
 
 // MediaInfo represents the current media playing information
 type MediaInfo struct {
-	Title       string `json:"title"`
-	Artist      string `json:"artist"`
-	Album       string `json:"album"`
-	AppName     string `json:"app_name"`
-	AppBundleID string `json:"app_bundle_id"`
-	State       string `json:"state"`    // "playing", "paused", "stopped"
-	Duration    int    `json:"duration"` // in seconds
-	Position    int    `json:"position"` // in seconds
+    Title       string `json:"title"`
+    Artist      string `json:"artist"`
+    Album       string `json:"album"`
+    AppName     string `json:"app_name"`
+    AppBundleID string `json:"app_bundle_id"`
+    State       string `json:"state"`    // "playing", "paused", "stopped"
+    Duration    int    `json:"duration"` // in seconds
+    Position    int    `json:"position"` // in seconds
+    ArtworkData     string `json:"artworkData"`
+    ArtworkMimeType string `json:"artworkMimeType"`
 }
 
 type Display struct {
@@ -651,10 +653,10 @@ func getMediaInfo() (*MediaInfo, error) {
 	}
 	mediaInfo.Position = position
 
-	// Set state based on playing status
-	mediaInfo.State = "playing"
+    // Set state based on playing status
+    mediaInfo.State = "playing"
 
-	return mediaInfo, nil
+    return mediaInfo, nil
 }
 
 // updateMediaPlayer updates the MQTT topics with current media player information
@@ -883,12 +885,20 @@ func (app *Application) processMediaStreamUpdate(client mqtt.Client, mediaData m
 			if f, ok := v.(float64); ok {
 				app.currentMediaState.Position = int(f)
 			}
-		case "positionMicros":
-			if f, ok := v.(float64); ok {
-				app.currentMediaState.Position = int(f / 1000000)
-			}
-		}
-	}
+        case "positionMicros":
+            if f, ok := v.(float64); ok {
+                app.currentMediaState.Position = int(f / 1000000)
+            }
+        case "artworkData":
+            if s, ok := v.(string); ok {
+                app.currentMediaState.ArtworkData = s
+            }
+        case "artworkMimeType":
+            if s, ok := v.(string); ok {
+                app.currentMediaState.ArtworkMimeType = s
+            }
+        }
+    }
 
 	// If playing is false and no other info, treat as idle
 	if state, ok := payload["playing"]; ok {
@@ -899,18 +909,45 @@ func (app *Application) processMediaStreamUpdate(client mqtt.Client, mediaData m
 
 	// Publish state and attributes
 	client.Publish(app.getTopicPrefix()+"/status/now_playing", 0, false, app.currentMediaState.State)
-	attr := map[string]interface{}{
-		"state":    app.currentMediaState.State,
-		"title":    app.currentMediaState.Title,
-		"artist":   app.currentMediaState.Artist,
-		"album":    app.currentMediaState.Album,
-		"app_name": app.currentMediaState.AppName,
-		"duration": app.currentMediaState.Duration,
-		"position": app.currentMediaState.Position,
-	}
-	attrJSON, _ := json.Marshal(attr)
-	client.Publish(app.getTopicPrefix()+"/status/now_playing_attr", 0, false, string(attrJSON))
-	log.Printf("Media stream update: %s - %s (%s)", app.currentMediaState.Artist, app.currentMediaState.Title, app.currentMediaState.State)
+    attr := map[string]interface{}{
+        "state":    app.currentMediaState.State,
+        "title":    app.currentMediaState.Title,
+        "artist":   app.currentMediaState.Artist,
+        "album":    app.currentMediaState.Album,
+        "app_name": app.currentMediaState.AppName,
+        "duration": app.currentMediaState.Duration,
+        "position": app.currentMediaState.Position,
+        "entity_picture": func() string {
+            if app.currentMediaState.ArtworkData != "" && app.currentMediaState.ArtworkMimeType != "" {
+                return "data:" + app.currentMediaState.ArtworkMimeType + ";base64," + app.currentMediaState.ArtworkData
+            }
+            return ""
+        }(),
+    }
+    attrJSON, _ := json.Marshal(attr)
+    client.Publish(app.getTopicPrefix()+"/status/now_playing_attr", 0, false, string(attrJSON))
+    log.Printf("Media stream update: %s - %s (%s)", app.currentMediaState.Artist, app.currentMediaState.Title, app.currentMediaState.State)
+
+    mediaState := map[string]interface{}{
+        "state":        app.currentMediaState.State,
+        "title":        app.currentMediaState.Title,
+        "artist":       app.currentMediaState.Artist,
+        "album":        app.currentMediaState.Album,
+        "app_name":     app.currentMediaState.AppName,
+        "duration":     app.currentMediaState.Duration,
+        "position":     app.currentMediaState.Position,
+        "media_title":  app.currentMediaState.Title,
+        "media_artist": app.currentMediaState.Artist,
+        "media_album":  app.currentMediaState.Album,
+        "entity_picture": func() string {
+            if app.currentMediaState.ArtworkData != "" && app.currentMediaState.ArtworkMimeType != "" {
+                return "data:" + app.currentMediaState.ArtworkMimeType + ";base64," + app.currentMediaState.ArtworkData
+            }
+            return ""
+        }(),
+    }
+    stateJSON, _ := json.Marshal(mediaState)
+    client.Publish(app.getTopicPrefix()+"/status/media_player", 0, false, string(stateJSON))
 }
 
 // getUserActivityState gets the current user activity state
@@ -1037,18 +1074,24 @@ func (app *Application) publishMediaState(client mqtt.Client, state, title, arti
 	client.Publish(app.getTopicPrefix()+"/status/media_position", 0, false, strconv.Itoa(position))
 
 	// Publish combined JSON state for media_player entity
-	mediaState := map[string]interface{}{
-		"state":        state,
-		"title":        title,
-		"artist":       artist,
-		"album":        album,
-		"app_name":     appName,
-		"duration":     duration,
-		"position":     position,
-		"media_title":  title,
-		"media_artist": artist,
-		"media_album":  album,
-	}
+    mediaState := map[string]interface{}{
+        "state":        state,
+        "title":        title,
+        "artist":       artist,
+        "album":        album,
+        "app_name":     appName,
+        "duration":     duration,
+        "position":     position,
+        "media_title":  title,
+        "media_artist": artist,
+        "media_album":  album,
+        "entity_picture": func() string {
+            if app.currentMediaState.ArtworkData != "" && app.currentMediaState.ArtworkMimeType != "" {
+                return "data:" + app.currentMediaState.ArtworkMimeType + ";base64," + app.currentMediaState.ArtworkData
+            }
+            return ""
+        }(),
+    }
 
 	stateJSON, _ := json.Marshal(mediaState)
 	mediaPlayerTopic := app.getTopicPrefix() + "/status/media_player"
@@ -1119,8 +1162,9 @@ func (app *Application) connectHandler(client mqtt.Client) {
 	app.updateVolume(client)
 	app.updateMute(client)
 	app.updateCaffeinateStatus(client)
-	app.updateDisplayBrightness(client)
-	app.updateNowPlaying(client)
+    app.updateDisplayBrightness(client)
+    app.updateNowPlaying(client)
+    app.updateMediaPlayer(client)
 	app.setUserActivityState(client, "inactive") // Initial state
 }
 
@@ -1188,12 +1232,11 @@ func (app *Application) getMQTTClientWithRetry(retryCount int) error {
 	opts.OnConnectionLost = app.connectLostHandler
 	opts.SetDefaultPublishHandler(app.messagePubHandler)
 
-	// Set client ID to ensure unique identification with timestamp to avoid conflicts
-	clientID := fmt.Sprintf("%s_mac2mqtt_%d", app.hostname, time.Now().Unix())
-	opts.SetClientID(clientID)
+    // Set client ID to ensure unique identification with timestamp to avoid conflicts
+    clientID := fmt.Sprintf("%s_mac2mqtt_%d", app.hostname, time.Now().Unix())
+    opts.SetClientID(clientID)
 
-	// Network-aware connection reliability settings
-	opts.SetClientID(app.hostname + "_mac2mqtt")
+    // Network-aware connection reliability settings
 	opts.SetKeepAlive(60 * time.Second)   // Send ping every 60 seconds
 	opts.SetPingTimeout(10 * time.Second) // Shorter ping timeout for faster network change detection
 	opts.SetConnectTimeout(15 * time.Second) // Shorter connect timeout for network switching
@@ -1632,12 +1675,31 @@ func (app *Application) setDevice(client mqtt.Client) {
 		"availability_topic": app.getTopicPrefix() + "/status/alive",
 		"qos":                2,
 	}
-	objectJSON, _ := json.Marshal(object)
+    objectJSON, _ := json.Marshal(object)
 
-	token := client.Publish(app.config.DiscoveryPrefix+"/device"+"/"+app.hostname+"/config", 0, true, objectJSON)
-	token.Wait()
+    token := client.Publish(app.config.DiscoveryPrefix+"/device"+"/"+app.hostname+"/config", 0, true, objectJSON)
+    token.Wait()
 
-	// Note: Media player functionality replaced with play/pause button and now playing sensor
+    // Note: Media player functionality replaced with play/pause button and now playing sensor
+
+    mediaPlayerCfg := map[string]interface{}{
+        "name":                  "Media Player",
+        "unique_id":             app.hostname + "_media_player",
+        "state_topic":           app.getTopicPrefix() + "/status/media_state",
+        "json_attributes_topic": app.getTopicPrefix() + "/status/media_player",
+        "availability_topic":    app.getTopicPrefix() + "/status/alive",
+        "payload_available":     "online",
+        "payload_not_available": "offline",
+        "icon":                  "mdi:music",
+        "device": map[string]interface{}{
+            "identifiers": []string{getSerialnumber()},
+            "name":        app.hostname,
+            "manufacturer": "Apple",
+            "model":       getModel(),
+        },
+    }
+    mediaPlayerCfgJSON, _ := json.Marshal(mediaPlayerCfg)
+    client.Publish(app.config.DiscoveryPrefix+"/media_player/"+app.hostname+"_media/config", 0, true, string(mediaPlayerCfgJSON))
 }
 
 // handleOfflineMode manages application behavior when MQTT broker is unreachable
@@ -1781,25 +1843,22 @@ func (app *Application) Run() error {
 				lastConnectionState = currentConnectionState
 			}
 			
-			// Handle network state changes
-            if currentNetworkState && !networkReachable {
-                if !currentConnectionState {
-                    log.Println("Attempting to reconnect to MQTT broker...")
-                    if app.client != nil {
-                        go func() {
-                            if token := app.client.Connect(); token.Wait() && token.Error() != nil {
-                                log.Printf("Reconnection attempt failed: %v", token.Error())
-                            }
-                        }()
-                    } else {
-                        go func() {
-                            if err := app.getMQTTClient(); err != nil {
-                                log.Printf("Reconnection attempt failed: %v", err)
-                            }
-                        }()
-                    }
-                }
-            }
+			if currentNetworkState && !currentConnectionState {
+				log.Println("Attempting to reconnect to MQTT broker...")
+				if app.client != nil {
+					go func() {
+						if token := app.client.Connect(); token.Wait() && token.Error() != nil {
+							log.Printf("Reconnection attempt failed: %v", token.Error())
+						}
+					}()
+				} else {
+					go func() {
+						if err := app.getMQTTClient(); err != nil {
+							log.Printf("Reconnection attempt failed: %v", err)
+						}
+					}()
+				}
+			}
 		}
 	}
 }
