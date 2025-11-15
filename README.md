@@ -1,108 +1,108 @@
-# Mac2MQTT (updated)
+# Mac2MQTT
 
-`mac2mqtt` is a program that allows viewing and controlling some aspects of computers running macOS via MQTT.
+Mac2MQTT 让你的 macOS 电脑通过 MQTT 接入 Home Assistant，支持音量、静音、系统睡眠/唤醒、保持唤醒、屏保、电池状态、用户活动传感器，以及（可选）显示器亮度与媒体播放信息。
 
-This repo is a fork of bessarabov/mac2mqtt, that add MQTT Autodiscovery and a KeepAwake function for the mac.
+## 功能概览
+- 状态发布：`<前缀>/status/#`
+- 命令订阅：`<前缀>/command/#`
+- 在线/离线：`<前缀>/status/alive`（保留消息，`online`/`offline`）
+- 音量与静音：系统音量 0–100、静音开关
+- 保持唤醒：通过 `caffeinate` 阻止系统睡眠
+- 系统按钮：睡眠、关机、显示休眠、显示唤醒、屏保
+- 电池传感器：笔记本电池百分比
+- 用户活动传感器：实时检测输入，10 秒未操作自动 `inactive`
+- 可选显示器亮度：BetterDisplay CLI
+- 可选媒体信息：media-control（播放/暂停、当前播放信息）
 
-It publishes to MQTT:
+## 我们的实际部署步骤
+### 1. 准备 MQTT（Home Assistant）
+- 在 HA 的 Mosquitto 插件中添加账户（例如：`hass`/`password`），启用 1883 端口
+- 启用 MQTT 自动发现，前缀使用 `homeassistant`
 
- * current volume
- * volume mute state
- * battery charge percent
- * **media player information (title, artist, album, app name, state)**
- * **user activity status (active/inactive with 10-second timeout)**
+### 2. 安装与目录结构
+- 将二进制与配置放到同一目录（必须）：`~/mac2mqtt`
+- 复制：`mac2mqtt`、`mac2mqtt.yaml`
+- 配置示例：
+```yaml
+mqtt_ip: 192.168.31.227
+mqtt_port: 1883
+mqtt_user: hass
+mqtt_password: password
+mqtt_ssl: false
+hostname: macbook-pro
+mqtt_topic: mac2mqtt/macbook-pro
+discovery_prefix: homeassistant
+```
+说明：程序启动时会从“可执行文件所在目录”读取 `mac2mqtt.yaml`，因此两者必须在同一目录。
 
-You can send topics to:
+### 3. 后台常驻（LaunchAgent）
+- 使用提供的 `com.hagak.mac2mqtt.plist` 安装到 `~/Library/LaunchAgents`
+- 为避免网络未就绪时崩溃，建议在 `ProgramArguments` 中加入端口探测（已集成）：
+```xml
+<array>
+  <string>/bin/sh</string>
+  <string>-lc</string>
+  <string>until /usr/bin/nc -z homeassistant.local 1883 2>/dev/null; do sleep 5; done; exec /Users/USERNAME/mac2mqtt/mac2mqtt</string>
+</array>
+```
+- 加载：`launchctl load ~/Library/LaunchAgents/com.hagak.mac2mqtt.plist`
+- 日志：`/tmp/mac2mqtt.job.out`、`/tmp/mac2mqtt.job.err`
 
- * change volume
- * mute/unmute
- * put the computer to sleep
- * shutdown computer
- * turn off the display
- * wake display
- * run macOS shortcuts
+### 4. 验证接入
+- 在线状态：`mac2mqtt/macbook-pro/status/alive` 应为 `online`（保留）
+- 自动发现：设备配置发布到 `homeassistant/device/macbook-pro/config`
+- 在 HA 的“设备与服务”中可看到 `macbook-pro` 与相关实体
 
-## Dependencies
+## 可选能力安装
+### 显示器亮度（BetterDisplay）
+- 安装：`brew install --cask betterdisplay`
+- 启动 BetterDisplay 应用，在偏好设置启用 CLI 访问
+- 验证 CLI：`betterdisplaycli get -identifiers`
 
-### Required
-- macOS (for system commands)
-- MQTT broker
+### 媒体播放信息（media-control）
+- 安装：`brew install media-control`
+- 验证：`media-control get`（即使未播放也会返回 JSON）
 
-### Optional
-- **BetterDisplay CLI** - for display brightness control
-  - Install BetterDisplay from https://github.com/waydabber/BetterDisplay
-  - Enable CLI access in BetterDisplay settings
-- **Media Control** - for media player information
-  - Install via npm: `npm install -g media-control`
-  - Or install via Homebrew: `brew install media-control`
-  - Provides current media playback information (title, artist, album, app name, state, duration, position)
-r:
+## 常用命令
+- 重载服务：`launchctl unload ~/Library/LaunchAgents/com.hagak.mac2mqtt.plist && launchctl load ~/Library/LaunchAgents/com.hagak.mac2mqtt.plist`
+- 查看在线：`mosquitto_sub -h <MQTT_IP> -u <user> -P <pass> -t mac2mqtt/macbook-pro/status/alive -v`
+- 查看日志：`tail -n 100 /tmp/mac2mqtt.job.err`、`tail -n 100 /tmp/mac2mqtt.job.out`
 
+## Home Assistant 中的实体（自动发现）
+- 音量滑块、静音开关
+- 保持唤醒开关
+- 系统按钮：睡眠/关机/显示休眠/显示唤醒/屏保
+- 电池传感器
+- 用户活动传感器（设备类 `occupancy`）
+- 显示器亮度滑块（启用 BetterDisplay CLI 后）
+- 播放/暂停按钮与“当前播放”传感器（安装 media-control 后）
 
+## 主题与命令示例
+- 状态前缀：`mac2mqtt/macbook-pro/status/#`
+- 命令前缀：`mac2mqtt/macbook-pro/command/#`
+- 示例：
+  - 设置音量：发布到 `.../command/volume`，载荷如 `42`
+  - 静音：发布到 `.../command/mute`，载荷 `true`/`false`
+  - 保活：发布到 `.../command/keepawake`，载荷 `true`/`false`
+  - 系统动作：发布到 `.../command/set`，载荷 `sleep`/`displaysleep`/`displaywake`/`screensaver`/`shutdown`
 
-## Installation
+## 常见问题与实践建议
+- 仅运行单实例：同时运行二进制与 LaunchAgent 会因重复 `clientId` 导致互踢，HA 中实体频繁“不可用”
+- 缺少 `switchaudiosource`：在外置或虚拟声卡场景，`osascript` 可能返回 `missing value`，已通过 `switchaudio-osx` 回退路径处理；安装：`brew install switchaudio-osx`
+- 网络未就绪：已在 LaunchAgent 增加端口探测，避免在网络不可达时刷日志或崩溃
+- 自动发现前缀：保持 `homeassistant`，程序会发布保留的设备配置到对应主题
 
-### Quick Installation (Recommended)
-
-The easiest way to install Mac2MQTT is using the provided installer script:
-
+## 构建（可选）
 ```bash
-./install.sh
+brew install go
+go mod download
+go build -o mac2mqtt mac2mqtt.go
+chmod +x mac2mqtt
 ```
 
-The installer will guide you through the entire setup process, including:
-- Building the application
-- Configuring MQTT settings
-- Installing optional dependencies
-- Setting up the service to run automatically
-- Creating management scripts
-
-### Manual Installation
-
-If you prefer to install manually, follow these steps:
-
-### Running
-
-To run this program you need to put 2 files in a directory (`/Users/USERNAME/mac2mqtt/`):
-
-    mac2mqtt
-    mac2mqtt.yaml
-
-Edit `mac2mqtt.yaml` (the sample file is in this repository), make binary executable (`chmod +x mac2mqtt`) and run `./mac2mqtt`:
-
-    $ ./mac2mqtt
-    2021/04/12 10:37:28 Started
-    2021/04/12 10:37:29 Connected to MQTT
-    2021/04/12 10:37:29 Sending 'true' to topic: mac2mqtt/bessarabov-osx/status/alive
-
-### Running in the background
-
-You need `mac2mqtt.yaml` and `mac2mqtt` to be placed in the directory `/Users/USERNAME/mac2mqtt/`,
-then you need edit the file `com.hagak.mac2mqtt.plist`
-and replace `USERNAME` with your username. Then put the file in `/Library/LaunchAgents/`.
-
-And run:
-
-    launchctl load /Library/LaunchAgents/com.hagak.mac2mqtt.plist
-
-(To stop you need to run `launchctl unload /Library/LaunchAgents/com.hagak.mac2mqtt.plist`)
-
-## Home Assistant sample config
-
-![](https://user-images.githubusercontent.com/47263/114361105-753c4200-9b7e-11eb-833c-c26a2b7d0e00.png)
-
-### Autodiscovery
-
-The application supports Home Assistant MQTT autodiscovery. When connected to Home Assistant, it will automatically create:
-
-- **Media Player** - Shows current playing media (requires Media Control)
-- **Volume Control** - Number slider for system volume
-- **Mute Switch** - Toggle for system mute
-- **Battery Sensor** - Battery percentage (laptops only)
-- **Keep Awake Switch** - Toggle to prevent system sleep
-- **System Buttons** - Sleep, shutdown, display sleep/wake, screensaver
-- **Display Brightness Controls** - Individual brightness sliders for each display (requires BetterDisplay CLI)
-- **User Activity Sensor** - Binary sensor showing active/inactive state with 10-second timeout
+## 维护与更新
+- 本指南以你的实际安装过程为准，后续改动将直接提交到你的 fork：`Redwinam/mac2mqtt`
+- 如需变更主题前缀或主机名，编辑 `~/mac2mqtt/mac2mqtt.yaml` 并重载服务
 
 ### Manual Configuration
 
