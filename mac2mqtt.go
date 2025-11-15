@@ -287,17 +287,16 @@ func getWorkingDirectory() string {
 }
 
 func getCommandOutput(name string, arg ...string) string {
-	cmd := exec.Command(name, arg...)
-	stdout, err := cmd.Output()
-	if err != nil {
-		log.Println("error: " + err.Error())
-		log.Println("output: " + string(stdout))
-		log.Fatal(err)
-	}
-	stdoutStr := string(stdout)
-	stdoutStr = strings.TrimSuffix(stdoutStr, "\n")
+    cmd := exec.Command(name, arg...)
+    stdout, err := cmd.Output()
+    if err != nil {
+        log.Printf("command failed: %s %s: %v", name, strings.Join(arg, " "), err)
+        return ""
+    }
+    stdoutStr := string(stdout)
+    stdoutStr = strings.TrimSuffix(stdoutStr, "\n")
 
-	return stdoutStr
+    return stdoutStr
 }
 
 func getCaffeinateStatus() bool {
@@ -1707,7 +1706,7 @@ func (app *Application) Run() error {
 	defer networkCheckTicker.Stop()
 
 	// Track connection state
-	lastConnectionState := app.client.IsConnected()
+    lastConnectionState := app.client != nil && app.client.IsConnected()
 	networkReachable := true
 
 	// Initial setup - only if MQTT is connected
@@ -1732,36 +1731,35 @@ func (app *Application) Run() error {
 	// Main event loop
 	for {
 		select {
-		case <-volumeTicker.C:
-			// Check if client is connected before publishing
-			if app.client.IsConnected() {
-				app.updateVolume(app.client)
-				app.updateMute(app.client)
-				app.client.Publish(app.getTopicPrefix()+"/status/alive", 0, true, "online")
-			} else if networkReachable {
-				log.Println("MQTT client not connected but network is reachable, connection may be recovering")
-			}
+        case <-volumeTicker.C:
+            if app.client != nil && app.client.IsConnected() {
+                app.updateVolume(app.client)
+                app.updateMute(app.client)
+                app.client.Publish(app.getTopicPrefix()+"/status/alive", 0, true, "online")
+            } else if networkReachable {
+                log.Println("MQTT client not connected but network is reachable, connection may be recovering")
+            }
 
-		case <-batteryTicker.C:
-			if app.client.IsConnected() {
-				app.updateBattery(app.client)
-			} else if networkReachable {
-				log.Println("MQTT client not connected but network is reachable, skipping battery update")
-			}
+        case <-batteryTicker.C:
+            if app.client != nil && app.client.IsConnected() {
+                app.updateBattery(app.client)
+            } else if networkReachable {
+                log.Println("MQTT client not connected but network is reachable, skipping battery update")
+            }
 
-		case <-awakeTicker.C:
-			if app.client.IsConnected() {
-				app.updateCaffeinateStatus(app.client)
-				app.updateDisplayBrightness(app.client)
-			} else if networkReachable {
-				log.Println("MQTT client not connected but network is reachable, skipping status updates")
-			}
+        case <-awakeTicker.C:
+            if app.client != nil && app.client.IsConnected() {
+                app.updateCaffeinateStatus(app.client)
+                app.updateDisplayBrightness(app.client)
+            } else if networkReachable {
+                log.Println("MQTT client not connected but network is reachable, skipping status updates")
+            }
 			// Note: Media updates now come from the media-control stream
 
-		case <-networkCheckTicker.C:
-			// Periodic network reachability check
-			currentNetworkState := app.isNetworkReachable()
-			currentConnectionState := app.client.IsConnected()
+        case <-networkCheckTicker.C:
+            // Periodic network reachability check
+            currentNetworkState := app.isNetworkReachable()
+            currentConnectionState := app.client != nil && app.client.IsConnected()
 			
 			// Log network state changes
 			if currentNetworkState != networkReachable {
@@ -1784,18 +1782,24 @@ func (app *Application) Run() error {
 			}
 			
 			// Handle network state changes
-			if currentNetworkState && !networkReachable {
-				// Network just became reachable - try to reconnect if not already connected
-				if !currentConnectionState {
-					log.Println("Attempting to reconnect to MQTT broker...")
-					// The auto-reconnect should handle this, but we can force a reconnection attempt
-					go func() {
-						if token := app.client.Connect(); token.Wait() && token.Error() != nil {
-							log.Printf("Reconnection attempt failed: %v", token.Error())
-						}
-					}()
-				}
-			}
+            if currentNetworkState && !networkReachable {
+                if !currentConnectionState {
+                    log.Println("Attempting to reconnect to MQTT broker...")
+                    if app.client != nil {
+                        go func() {
+                            if token := app.client.Connect(); token.Wait() && token.Error() != nil {
+                                log.Printf("Reconnection attempt failed: %v", token.Error())
+                            }
+                        }()
+                    } else {
+                        go func() {
+                            if err := app.getMQTTClient(); err != nil {
+                                log.Printf("Reconnection attempt failed: %v", err)
+                            }
+                        }()
+                    }
+                }
+            }
 		}
 	}
 }
